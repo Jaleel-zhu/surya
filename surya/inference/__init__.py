@@ -101,6 +101,10 @@ class SuryaInferenceManager:
     def generate(self, batch: List[BatchInputItem]) -> List[BatchOutputItem]:
         return self.backend.generate(batch)
 
+    def capacity(self) -> int:
+        """Server concurrency capacity (see Backend.capacity)."""
+        return self.backend.capacity()
+
 
 # Module-level lazy singleton for callers that don't want explicit construction
 # (notebooks, ad-hoc scripts). Surya's own models.py and marker should use

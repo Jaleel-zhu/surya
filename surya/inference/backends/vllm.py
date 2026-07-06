@@ -95,6 +95,9 @@ class VllmBackend(Backend):
         # used to default client-side parallelism to the GPU's capability.
         self._max_num_seqs: int = 8
 
+    def capacity(self) -> int:
+        return self._max_num_seqs
+
     def _client_parallel(self) -> int:
         if settings.SURYA_INFERENCE_PARALLEL is not None:
             return settings.SURYA_INFERENCE_PARALLEL

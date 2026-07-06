@@ -192,6 +192,11 @@ class LlamaCppBackend(Backend):
         )
         return self.handle
 
+    def capacity(self) -> int:
+        from surya.settings import settings
+
+        return settings.SURYA_INFERENCE_PARALLEL or self.DEFAULT_PARALLEL
+
     def stop(self) -> None:
         # atexit handler in spawn.py owns cleanup; nothing to do here.
         self.handle = None
