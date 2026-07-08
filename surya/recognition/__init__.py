@@ -36,6 +36,13 @@ logger = get_logger()
 # after canonicalization).
 SKIP_CANON_LABELS = {LAYOUT_PRED_RELABEL.get(lbl, lbl) for lbl in SKIP_OCR_LABELS}
 
+# Full-page OCR regeneration schedule (chandra-style), used ONLY when
+# settings.SURYA_FULLPAGE_REGEN is True. Round 0 is greedy; a page whose output
+# loops / fails to parse is re-requested at escalating temperature (top_p 0.95)
+# before resorting to the (slower) block-mode fallback. Mirrors chandra's
+# retry_temperature = min(0.2*(n+1), 0.8) over MAX_VLLM_RETRIES=6 retries.
+_REGEN_ROUNDS = [(0.0, None)] + [(min(0.2 * (n + 1), 0.8), 0.95) for n in range(6)]
+
 
 def _crop_block(image: Image.Image, polygon, pad: int = 4) -> Image.Image:
     xs = [p[0] for p in polygon]
@@ -271,57 +278,27 @@ class RecognitionPredictor:
         LayoutPredictor is invoked lazily for just the affected pages.
         """
         manager = self.manager or get_default_manager()
-        batch = [
-            BatchInputItem(
-                image=img,
-                prompt_type=PROMPT_TYPE_HIGH_ACCURACY_BBOX,
-                max_tokens=settings.SURYA_MAX_TOKENS_FULL_PAGE,
-                metadata={"page_idx": i},
-            )
-            for i, img in enumerate(images)
-        ]
-        outputs = manager.generate(batch)
-        out_by_page = {o.metadata["page_idx"]: o for o in outputs}
-
         results: List[Optional[PageOCRResult]] = [None] * len(images)
-        needs_fallback: List[int] = []
-        for page_idx, img in enumerate(images):
+
+        def _build_page(out, img):
+            """A good full-page output -> PageOCRResult; otherwise None (regen/fallback).
+            A genuinely blank page is a valid empty result (not a failure)."""
             w, h = img.size
             page_bbox = [0, 0, float(w), float(h)]
-            out = out_by_page.get(page_idx)
             if out is None or out.error:
-                # Hard failure (request lost / server error). Always fallback.
-                needs_fallback.append(page_idx)
-                continue
+                return None
             if not out.raw:
-                # Empty model output. If the page is genuinely blank, the
-                # model is correct — return an empty result. Only fall back
-                # when the page has content the model failed to emit.
-                if is_blank_region(img):
-                    results[page_idx] = PageOCRResult(blocks=[], image_bbox=page_bbox)
-                else:
-                    logger.info(
-                        f"empty full-page output for non-blank page {page_idx}; "
-                        f"falling back to layout + block OCR"
-                    )
-                    needs_fallback.append(page_idx)
-                continue
-            if _detect_repeat_loop(out.raw):
-                logger.info(
-                    f"full-page output for page {page_idx} appears to loop; "
-                    f"falling back to layout + block OCR"
+                return (
+                    PageOCRResult(blocks=[], image_bbox=page_bbox)
+                    if is_blank_region(img)
+                    else None
                 )
-                needs_fallback.append(page_idx)
-                continue
+            if _detect_repeat_loop(out.raw):
+                return None
             try:
                 parsed = parse_full_page_html(out.raw)
-            except Exception as e:
-                logger.warning(
-                    f"Full-page parse failed for page {page_idx}: {e}; "
-                    f"falling back to layout + block OCR"
-                )
-                needs_fallback.append(page_idx)
-                continue
+            except Exception:
+                return None
             confidence = out.mean_token_prob if out.mean_token_prob is not None else 1.0
             blocks: List[BlockOCRResult] = []
             for idx, item in enumerate(parsed):
@@ -344,8 +321,43 @@ class RecognitionPredictor:
                         confidence=confidence,
                     )
                 )
-            blocks = _drop_blank_text_blocks(img, blocks)
-            results[page_idx] = PageOCRResult(blocks=blocks, image_bbox=page_bbox)
+            return PageOCRResult(
+                blocks=_drop_blank_text_blocks(img, blocks), image_bbox=page_bbox
+            )
+
+        # Progressive-temperature regeneration (chandra-style), gated by
+        # settings.SURYA_FULLPAGE_REGEN (default off -> single greedy pass, then
+        # block-mode fallback, i.e. surya's prior behavior).
+        rounds = _REGEN_ROUNDS if settings.SURYA_FULLPAGE_REGEN else [(0.0, None)]
+        pending = list(range(len(images)))
+        for round_i, (temp, top_p) in enumerate(rounds):
+            if not pending:
+                break
+            batch = [
+                BatchInputItem(
+                    image=images[i],
+                    prompt_type=PROMPT_TYPE_HIGH_ACCURACY_BBOX,
+                    max_tokens=settings.SURYA_MAX_TOKENS_FULL_PAGE,
+                    temperature=(temp if round_i > 0 else None),
+                    top_p=top_p,
+                    metadata={"page_idx": i},
+                )
+                for i in pending
+            ]
+            out_by_page = {o.metadata["page_idx"]: o for o in manager.generate(batch)}
+            still: List[int] = []
+            for i in pending:
+                r = _build_page(out_by_page.get(i), images[i])
+                if r is not None:
+                    results[i] = r
+                else:
+                    still.append(i)
+            if still and round_i < len(rounds) - 1:
+                logger.info(
+                    f"regenerating {len(still)} full-page output(s) at higher temperature"
+                )
+            pending = still
+        needs_fallback: List[int] = pending
 
         # Block-mode fallback for any pages whose full-page output failed or looped.
         if needs_fallback:

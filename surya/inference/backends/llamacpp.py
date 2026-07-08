@@ -67,6 +67,9 @@ def _openai_url(port: int) -> str:
 
 class LlamaCppBackend(Backend):
     name = "llamacpp"
+    # Conservative default slot count - each parallel slot consumes KV cache,
+    # so llama.cpp can't fan out as wide as a server-class GPU under vllm.
+    DEFAULT_PARALLEL = 8
 
     def __init__(self):
         self.handle: Optional[ServerHandle] = None
@@ -113,7 +116,7 @@ class LlamaCppBackend(Backend):
         # --parallel slots, so a too-small total silently truncates outputs
         # once each slot's share fills. Scale with parallel by default;
         # SURYA_INFERENCE_CTX_SIZE overrides to a fixed value if set.
-        parallel = settings.SURYA_INFERENCE_PARALLEL
+        parallel = settings.SURYA_INFERENCE_PARALLEL or self.DEFAULT_PARALLEL
         per_slot = settings.SURYA_INFERENCE_CTX_PER_SLOT
         ctx_size = settings.SURYA_INFERENCE_CTX_SIZE
         if ctx_size is None:
@@ -189,6 +192,11 @@ class LlamaCppBackend(Backend):
         )
         return self.handle
 
+    def capacity(self) -> int:
+        from surya.settings import settings
+
+        return settings.SURYA_INFERENCE_PARALLEL or self.DEFAULT_PARALLEL
+
     def stop(self) -> None:
         # atexit handler in spawn.py owns cleanup; nothing to do here.
         self.handle = None
@@ -202,6 +210,6 @@ class LlamaCppBackend(Backend):
             client=self._client,
             model_name=self.handle.model_name,
             timeout=settings.SURYA_INFERENCE_TIMEOUT_SECONDS,
-            max_workers=settings.SURYA_INFERENCE_PARALLEL,
+            max_workers=settings.SURYA_INFERENCE_PARALLEL or self.DEFAULT_PARALLEL,
             request_logprobs_default=settings.SURYA_INFERENCE_LOGPROBS,
         )

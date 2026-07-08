@@ -16,6 +16,10 @@ class BatchInputItem:
     prompt_type: str
     prompt: Optional[str] = None  # If set, overrides the default prompt for prompt_type
     max_tokens: Optional[int] = None
+    temperature: Optional[float] = (
+        None  # If set, overrides the backend default temperature
+    )
+    top_p: Optional[float] = None  # If set, overrides the backend default top_p
     request_logprobs: bool = False
     # vllm-native guided decoding — JSON schema, regex, or grammar string.
     # When set, the server constrains the decode tokens to match the schema.

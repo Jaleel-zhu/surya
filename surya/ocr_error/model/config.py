@@ -1,15 +1,9 @@
-from collections import OrderedDict
-from typing import Mapping
-
 from transformers.configuration_utils import PretrainedConfig
-from transformers.onnx import OnnxConfig
 
 from surya.common.s3 import S3DownloaderMixin
 
-ID2LABEL = {
-    0: 'good',
-    1: 'bad'
-}
+ID2LABEL = {0: "good", 1: "bad"}
+
 
 class DistilBertConfig(S3DownloaderMixin, PretrainedConfig):
     model_type = "distilbert"
@@ -51,18 +45,3 @@ class DistilBertConfig(S3DownloaderMixin, PretrainedConfig):
         self.qa_dropout = qa_dropout
         self.seq_classif_dropout = seq_classif_dropout
         super().__init__(**kwargs, pad_token_id=pad_token_id)
-
-
-class DistilBertOnnxConfig(OnnxConfig):
-    @property
-    def inputs(self) -> Mapping[str, Mapping[int, str]]:
-        if self.task == "multiple-choice":
-            dynamic_axis = {0: "batch", 1: "choice", 2: "sequence"}
-        else:
-            dynamic_axis = {0: "batch", 1: "sequence"}
-        return OrderedDict(
-            [
-                ("input_ids", dynamic_axis),
-                ("attention_mask", dynamic_axis),
-            ]
-        )

@@ -29,3 +29,9 @@ class Backend:
 
     def generate(self, batch: List[BatchInputItem]) -> List[BatchOutputItem]:
         raise NotImplementedError
+
+    def capacity(self) -> int:
+        """Server-side concurrency capacity (concurrent requests the server can
+        actively process). Callers sizing multi-process client pools should
+        target an aggregate in-flight count of ~this value."""
+        return 8

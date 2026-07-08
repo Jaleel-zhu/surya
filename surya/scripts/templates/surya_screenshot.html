@@ -102,11 +102,18 @@
     #dropOverlay .drop-card { padding: 40px 64px; border: 3px dashed #fff;
       border-radius: 16px; color: #fff; font-size: 22px; font-weight: 700;
       background: rgba(37,99,235,.30); }
-    /* While screenshotting, expand panels to full content height so
-       html2canvas captures everything, not just the visible scroll area. */
+    /* Screenshot mode: size each panel to its content (no scroll clipping),
+       show the page image at full resolution, and flow long OCR output into
+       newspaper-style columns capped to the page height — so a tall transcript
+       extends rightward instead of leaving dead space beside the page. */
     body.capturing { height: auto !important; overflow: visible !important; }
-    body.capturing .stage { height: auto !important; overflow: visible !important; }
+    body.capturing .stage { height: auto !important; overflow: visible !important;
+      align-items: flex-start !important; width: max-content !important; }
+    body.capturing .panel { flex: 0 0 auto !important; }
     body.capturing .panel-body { height: auto !important; overflow: visible !important; }
+    body.capturing #pageCanvas { max-width: none !important; }
+    body.capturing #ocr table, body.capturing #ocr img,
+    body.capturing #ocr .katex-display { break-inside: avoid; }
   </style>
 </head>
 <body>
@@ -296,22 +303,49 @@
     async function saveScreenshot() {
       setStatus("Capturing…", "loading");
       const stage = document.querySelector(".stage");
+      const canvas = $("pageCanvas");
+      const ocr = $("ocr");
+      const COLW = 360, GAP = 28, PADX = 64, MAXH = 1600; // PADX = #ocr l+r padding
+      const settle = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
       document.body.classList.add("capturing");
+      // Shrink the page to <= MAXH tall (keeps the capture a sane size), and use
+      // its width as the baseline so page + OCR land ~50/50.
+      const aspect = (canvas.width || 1) / (canvas.height || 1);
+      const H = Math.min(canvas.height || MAXH, MAXH);
+      const Wp = Math.round(H * aspect);
+      Object.assign(canvas.style, { maxWidth: "none", width: Wp + "px", height: "auto" });
+      // Measure OCR height in a single COLW-wide column.
+      Object.assign(ocr.style, { width: COLW + "px", height: "auto", columnWidth: "", columnGap: "", columnFill: "" });
       try {
-        // Let the expanded layout settle before measuring full size.
-        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        await settle();
+        const totalH = ocr.scrollHeight;
+        const n = Math.max(1, Math.ceil(totalH / H));         // page-height columns needed
+        const blockW = n * COLW + (n - 1) * GAP + PADX;
+        // Never narrower than the page → OCR fills its ~half (extra columns just
+        // leave trailing whitespace); only goes wider than the page when the
+        // transcript genuinely needs more columns than fit at page width.
+        const ocrW = Math.max(Wp, blockW);
+        Object.assign(ocr.style, {
+          width: ocrW + "px", height: H + "px",
+          columnWidth: COLW + "px", columnGap: GAP + "px", columnFill: "auto",
+        });
+        await settle();
         const w = stage.scrollWidth, h = stage.scrollHeight;
-        const canvas = await html2canvas(stage, {
-          backgroundColor: "#f4f6f9", scale: 2, useCORS: true, logging: false,
+        const shot = await html2canvas(stage, {
+          backgroundColor: "#f4f6f9", scale: 1.5, useCORS: true, logging: false,
           width: w, height: h, windowWidth: w, windowHeight: h, scrollX: 0, scrollY: 0,
         });
         const a = document.createElement("a");
-        a.href = canvas.toDataURL("image/png");
+        a.href = shot.toDataURL("image/png");
         a.download = `surya_ocr_page_${(S.ocrPage ?? S.page) + 1}.png`;
         a.click();
-        setStatus("Saved", "ok");
+        setStatus(n > 1 ? `Saved (${n} columns)` : "Saved", "ok");
       } catch (e) { setStatus("Screenshot failed: " + e.message, "error"); }
-      finally { document.body.classList.remove("capturing"); }
+      finally {
+        document.body.classList.remove("capturing");
+        Object.assign(ocr.style, { width: "", height: "", columnWidth: "", columnGap: "", columnFill: "" });
+        Object.assign(canvas.style, { maxWidth: "", width: "", height: "" });
+      }
     }
 
     $("filePath").addEventListener("keypress", (e) => { if (e.key === "Enter") loadFile(); });

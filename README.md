@@ -389,7 +389,7 @@ Pareto-optimal on the size-vs-score frontier, and best in class under 3B params.
 | Model                       | Params    | Score    |
 |-----------------------------|----------:|---------:|
 | Infinity-Parser2-Pro        |     35.1B |     87.6 |
-| Chandra OCR 2 (Datalab)     |      5.3B |     85.9 |
+| Chandra OCR 2 (Datalab)     |      4.0B |     85.9 |
 | dots.mocr                   |      3.0B |     83.9 |
 | **Surya OCR 2** (Datalab)   | **0.65B** | **83.3** |
 | LightOnOCR 2-1B \*          |      1.0B |     83.2 |

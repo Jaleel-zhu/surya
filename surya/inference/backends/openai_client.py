@@ -83,13 +83,15 @@ def _generate_one(
 
     max_tokens = item.max_tokens or max_tokens_default
     request_logprobs = item.request_logprobs or request_logprobs_default
+    temp = item.temperature if item.temperature is not None else temperature
+    tp = item.top_p if item.top_p is not None else top_p
 
     kwargs = dict(
         model=model_name,
         messages=messages,
         max_tokens=max_tokens,
-        temperature=temperature,
-        top_p=top_p,
+        temperature=temp,
+        top_p=tp,
         timeout=timeout,
     )
     if request_logprobs:

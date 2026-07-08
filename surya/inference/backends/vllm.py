@@ -81,13 +81,38 @@ def _openai_url(port: int) -> str:
 class VllmBackend(Backend):
     name = "vllm"
 
+    # Cap auto-scaled client concurrency at the GPU-saturation knee. Measured
+    # layout throughput on a B200 (max_num_seqs=240): 48→96 gives +28%, but
+    # 96→240 only +5% — the GPU is compute-bound past ~96 concurrent, so extra
+    # requests just queue while adding thread/connection overhead. Smaller GPUs
+    # are bounded by their own (lower) max_num_seqs below this.
+    MAX_AUTO_PARALLEL = 96
+
     def __init__(self):
         self.handle: Optional[ServerHandle] = None
         self._client: Optional[OpenAI] = None
+        # Server concurrency capacity, set when the server is configured;
+        # used to default client-side parallelism to the GPU's capability.
+        self._max_num_seqs: int = 8
+
+    def capacity(self) -> int:
+        return self._max_num_seqs
+
+    def _client_parallel(self) -> int:
+        if settings.SURYA_INFERENCE_PARALLEL is not None:
+            return settings.SURYA_INFERENCE_PARALLEL
+        return min(self._max_num_seqs, self.MAX_AUTO_PARALLEL)
 
     def start(self) -> ServerHandle:
         if self.handle is not None:
             return self.handle
+
+        # Best-effort server capacity for defaulting client concurrency, even
+        # when attaching to an external server.
+        try:
+            self._max_num_seqs = _gpu_settings(settings.VLLM_GPU_TYPE)[1]
+        except SpawnError:
+            pass
 
         # If user pinned an external server, attach without spawning docker.
         if settings.SURYA_INFERENCE_URL:
@@ -113,6 +138,7 @@ class VllmBackend(Backend):
 
         docker = _resolve_docker_binary()
         max_batched_tokens, max_num_seqs = _gpu_settings(settings.VLLM_GPU_TYPE)
+        self._max_num_seqs = max_num_seqs
 
         def spawn_fn(port: int) -> SpawnHandle:
             container_name = f"surya-vllm-{port}"
@@ -202,6 +228,6 @@ class VllmBackend(Backend):
             client=self._client,
             model_name=self.handle.model_name,
             timeout=settings.SURYA_INFERENCE_TIMEOUT_SECONDS,
-            max_workers=settings.SURYA_INFERENCE_PARALLEL,
+            max_workers=self._client_parallel(),
             request_logprobs_default=settings.SURYA_INFERENCE_LOGPROBS,
         )

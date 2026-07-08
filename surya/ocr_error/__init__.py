@@ -29,6 +29,7 @@ class OCRErrorPredictor(BasePredictor):
             texts, padding="longest", truncation=True, return_tensors="pt"
         )
         predictions = []
+        scores = []
         for batch_idx in tqdm(
             range(num_batches),
             desc="Running OCR Error Detection",
@@ -44,9 +45,12 @@ class OCRErrorPredictor(BasePredictor):
 
             with settings.INFERENCE_MODE():
                 pred = self.model(batch_input_ids, attention_mask=batch_attention_mask)
-                logits = pred.logits.argmax(dim=1).cpu().tolist()
-                predictions.extend(logits)
+                probs = pred.logits.softmax(dim=1)
+                predictions.extend(probs.argmax(dim=1).cpu().tolist())
+                scores.extend(probs[:, 1].cpu().tolist())
 
         return OCRErrorDetectionResult(
-            texts=texts, labels=[ID2LABEL[p] for p in predictions]
+            texts=texts,
+            labels=[ID2LABEL[p] for p in predictions],
+            scores=scores,
         )
