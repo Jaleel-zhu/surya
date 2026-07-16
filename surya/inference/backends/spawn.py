@@ -138,7 +138,7 @@ def _stop_process(pid: int, name: str) -> None:
         logger.warning(f"Failed to stop {name} (pid {pid}): {e}")
 
 
-def _capture_server_logs(handle: "SpawnHandle", tail: int = 100) -> str:
+def _capture_server_logs(handle: "SpawnHandle", backend: str, tail: int = 100) -> str:
     """Best-effort tail of a server's logs, for surfacing startup failures."""
     try:
         if handle.cleanup_kind == "docker":
@@ -149,13 +149,15 @@ def _capture_server_logs(handle: "SpawnHandle", tail: int = 100) -> str:
                 timeout=15,
             )
             return (r.stdout or "") + (r.stderr or "") or "(no docker logs)"
-        # llama.cpp process backend logs to this file (see llamacpp.py)
-        log_path = Path("~/.cache/datalab/surya/llamacpp_server.log").expanduser()
+        # Process backends log to ~/.cache/datalab/surya/<backend>_server.log
+        # (llamacpp and every batch-service server follow this convention).
+        log_path = Path(f"~/.cache/datalab/surya/{backend}_server.log").expanduser()
         if log_path.exists():
             lines = log_path.read_text(errors="replace").splitlines()
             return "\n".join(lines[-tail:]) or "(empty log)"
     except Exception as e:
         return f"(could not capture logs: {e})"
+    return "(no logs available)"
     return "(no logs available)"
 
 
@@ -169,6 +171,9 @@ def _stop_docker_container(name: str) -> None:
         logger.warning(f"Failed to stop docker container {name}: {e}")
 
 
+_UNSET = object()
+
+
 def attach_or_spawn(
     backend: str,
     expected_model_name: str,
@@ -176,15 +181,34 @@ def attach_or_spawn(
     health_url_for: Callable[[int], str],
     openai_url_for: Callable[[int], str],
     startup_timeout: float = 600.0,
+    *,
+    external_url=_UNSET,
+    autostart=_UNSET,
+    fixed_port=_UNSET,
+    keep_alive=_UNSET,
 ) -> SpawnedServer:
     """Generic attach-or-spawn with file lock and sentinel.
 
     `spawn_fn(port)` must launch the server detached and return a SpawnHandle
     with `pid` (int or None for docker) and a `cleanup_id` (e.g. container name).
+
+    The `external_url`/`autostart`/`fixed_port`/`keep_alive` overrides let a
+    non-VLM caller (e.g. the fast-layout server) drive this off its own settings.
+    Left unset, they default to the VLM ``SURYA_INFERENCE_*`` settings, so the
+    vllm/llamacpp callers are unchanged.
     """
+    if external_url is _UNSET:
+        external_url = settings.SURYA_INFERENCE_URL
+    if autostart is _UNSET:
+        autostart = settings.SURYA_INFERENCE_AUTOSTART
+    if fixed_port is _UNSET:
+        fixed_port = settings.SURYA_INFERENCE_PORT
+    if keep_alive is _UNSET:
+        keep_alive = settings.SURYA_INFERENCE_KEEP_ALIVE
+
     # 0. If user pinned an external URL, attach without lock
-    if settings.SURYA_INFERENCE_URL:
-        base_url = settings.SURYA_INFERENCE_URL.rstrip("/")
+    if external_url:
+        base_url = external_url.rstrip("/")
         health_url = base_url[: -len("/v1")] if base_url.endswith("/v1") else base_url
         if not probe_health(health_url):
             raise SpawnError(
@@ -206,7 +230,13 @@ def attach_or_spawn(
             spawned_by_us=False,
         )
 
-    # 1. Probe sentinel without lock
+    # 1. Probe sentinel without lock (read-only fast path). This must NOT mutate
+    # the sentinel: when many clients cold-start at once, one holds the lock
+    # mid-spawn with its server still loading (so it reads unhealthy here). If an
+    # unlocked waiter deleted the sentinel on that "unhealthy" read, it would then
+    # acquire the lock, find no sentinel, and spawn a *second* server. So we only
+    # attach here when healthy; otherwise fall through to the locked path, which
+    # owns all sentinel deletion/replacement.
     existing = _read_sentinel(backend)
     if existing:
         port = existing.get("port")
@@ -227,13 +257,11 @@ def attach_or_spawn(
                 backend=backend,
                 spawned_by_us=False,
             )
-        else:
-            _delete_sentinel(backend)
 
-    if not settings.SURYA_INFERENCE_AUTOSTART:
+    if not autostart:
         raise SpawnError(
-            f"No running {backend} server and SURYA_INFERENCE_AUTOSTART is False. "
-            "Set the variable to True or start the server manually."
+            f"No running {backend} server and autostart is disabled. "
+            "Enable autostart or start the server manually."
         )
 
     # 2. Acquire filelock to prevent races
@@ -269,7 +297,7 @@ def attach_or_spawn(
                 )
 
         # 3. Spawn fresh
-        port = settings.SURYA_INFERENCE_PORT or find_free_port()
+        port = fixed_port or find_free_port()
         logger.info(f"Spawning {backend} server on port {port}")
         spawn_handle = spawn_fn(port)
 
@@ -300,7 +328,7 @@ def attach_or_spawn(
             finally:
                 _delete_sentinel(backend)
 
-        if settings.SURYA_INFERENCE_KEEP_ALIVE:
+        if keep_alive:
             logger.info(
                 f"keep-alive: {backend} server on port {port} will stay up "
                 f"after exit (cleanup_id={spawn_handle.cleanup_id!r})"
@@ -314,7 +342,7 @@ def attach_or_spawn(
             # Grab the server's own logs *before* cleanup tears the (--rm)
             # container down, otherwise the actual failure reason is lost and
             # all the caller sees is this timeout.
-            logs = _capture_server_logs(spawn_handle)
+            logs = _capture_server_logs(spawn_handle, backend)
             _cleanup()
             raise SpawnError(
                 f"{backend} server failed to become healthy at {health_url} "
