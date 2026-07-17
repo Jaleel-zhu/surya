@@ -693,20 +693,27 @@ class EfficientViTPreTrainedModel(SuryaPreTrainedModel):
     main_input_name = "pixel_values"
 
     def _init_weights(self, module):
-        """Initialize the weights"""
+        """Initialize the weights.
+
+        Must go through ``torch.nn.init.*`` (not raw ``module.weight.data.*``):
+        transformers 5.x guards the ``nn.init`` functions so they no-op on params
+        already flagged ``_is_hf_initialized`` (i.e. loaded from a checkpoint). Raw
+        ``.data`` mutation bypasses that guard, so a from_pretrained load would
+        silently re-randomize every Conv2d/Linear weight after loading them.
+        """
+        std = self.config.initializer_range
         if isinstance(module, (nn.Linear, nn.Conv2d)):
-            # Slightly different from the TF version which uses truncated_normal for initialization
-            # cf https://github.com/pytorch/pytorch/pull/5617
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            nn.init.normal_(module.weight, mean=0.0, std=std)
             if module.bias is not None:
-                module.bias.data.zero_()
+                nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            nn.init.normal_(module.weight, mean=0.0, std=std)
             if module.padding_idx is not None:
-                module.weight.data[module.padding_idx].zero_()
+                with torch.no_grad():
+                    module.weight[module.padding_idx].zero_()
         elif isinstance(module, nn.LayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
+            nn.init.zeros_(module.bias)
+            nn.init.ones_(module.weight)
 
 
 class DecodeMLP(nn.Module):

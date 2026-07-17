@@ -19,13 +19,50 @@ from surya.detection.heatmap import parallel_get_boxes
 
 
 class DetectionPredictor(BasePredictor):
+    """Text detection, served from one shared instance.
+
+    Public construction is client-backed: the model runs in a single shared server
+    process (surya.detection.server) and this object POSTs images to it, so N worker
+    processes don't each load their own copy. Use ``DetectionPredictor.local()`` for
+    a process-local predictor that owns the model (that's what the server uses). The
+    __call__ signature and TextDetectionResult output are unchanged.
+    """
+
     model_loader_cls = DetectionModelLoader
     batch_size = settings.DETECTOR_BATCH_SIZE
     default_batch_sizes = {"cpu": 8, "mps": 8, "cuda": 36}
 
+    def __init__(
+        self, checkpoint=None, device=None, dtype=None, attention_implementation=None
+    ):
+        # Client-backed by default: no model load here. device/dtype/attn are
+        # accepted for signature parity with BasePredictor but live server-side.
+        from surya.detection.client import DetectionServerClient
+
+        self._client = DetectionServerClient(checkpoint=checkpoint)
+        self.model = None
+        self.processor = None
+        self._disable_tqdm = settings.DISABLE_TQDM
+
+    @classmethod
+    def local(cls, *args, **kwargs) -> "DetectionPredictor":
+        """Process-local predictor that owns the model (used by the server)."""
+        self = cls.__new__(cls)
+        BasePredictor.__init__(self, *args, **kwargs)
+        self._client = None
+        return self
+
+    def to(self, device_dtype=None):
+        if self._client is not None:  # client-backed: device lives server-side
+            return
+        return super().to(device_dtype)
+
     def __call__(
         self, images: List[Image.Image], batch_size=None, include_maps=False
     ) -> List[TextDetectionResult]:
+        if self._client is not None:
+            return self._client(images, include_maps=include_maps)
+
         detection_generator = self.batch_detection(images, batch_size=batch_size)
 
         postprocessing_futures = []

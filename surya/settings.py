@@ -122,10 +122,29 @@ class Settings(BaseSettings):
     DETECTOR_POSTPROCESSING_CPU_WORKERS: int = min(8, os.cpu_count())
     DETECTOR_MIN_PARALLEL_THRESH: int = 3
     DETECTOR_BOX_Y_EXPAND_MARGIN: float = 0.05
+    # Shared detection server (one model instance for all clients; see the
+    # fast-layout block below for what each knob does).
+    DETECTOR_SERVER_URL: Optional[str] = None
+    DETECTOR_SERVER_HOST: str = "127.0.0.1"
+    DETECTOR_SERVER_PORT: Optional[int] = None
+    DETECTOR_SERVER_AUTOSTART: bool = True
+    DETECTOR_SERVER_STARTUP_TIMEOUT: float = 300.0
+    DETECTOR_SERVER_TIMEOUT: float = 600.0
+    DETECTOR_SERVER_BATCH_WAIT_MS: int = 5
+    DETECTOR_SERVER_MAX_BATCH: Optional[int] = None
 
     # ---- OCR Error (kept) ---------------------------------------------------
     OCR_ERROR_MODEL_CHECKPOINT: str = "s3://ocr_error_detection/2025_02_18"
     OCR_ERROR_BATCH_SIZE: Optional[int] = None
+    # Shared ocr-error server (one model instance for all clients).
+    OCR_ERROR_SERVER_URL: Optional[str] = None
+    OCR_ERROR_SERVER_HOST: str = "127.0.0.1"
+    OCR_ERROR_SERVER_PORT: Optional[int] = None
+    OCR_ERROR_SERVER_AUTOSTART: bool = True
+    OCR_ERROR_SERVER_STARTUP_TIMEOUT: float = 300.0
+    OCR_ERROR_SERVER_TIMEOUT: float = 600.0
+    OCR_ERROR_SERVER_BATCH_WAIT_MS: int = 5
+    OCR_ERROR_SERVER_MAX_BATCH: Optional[int] = None
 
     # ---- Fast layout (rf-detr, CPU) ------------------------------------------
     # Lightweight detector. Checkpoint may be a local dir (rf-detr .pth + config.json),
@@ -142,6 +161,29 @@ class Settings(BaseSettings):
     # Device for the rf-detr fast detector. None = auto (cuda > mps > cpu). Override to
     # force "cpu"/"cuda"/"mps".
     FAST_DETECTOR_DEVICE: Optional[str] = None
+    # torch intra-op thread count for the rf-detr detector, applied inside the shared
+    # server. None = torch default (all cores).
+    FAST_LAYOUT_NUM_THREADS: Optional[int] = None
+
+    # ---- Fast layout server (shared, continuous-batching) --------------------
+    # The rf-detr model always runs in one shared server process; FastLayoutPredictor
+    # is a thin client of it (there's no benefit to more than one layout model on a
+    # host, and N in-process copies thrash the CPU/GPU). The first client attaches to
+    # a running server or spawns one; the rest attach. These settings tune that server.
+    # Pin an already-running server; skips spawn. e.g. "http://127.0.0.1:8920/v1".
+    FAST_LAYOUT_SERVER_URL: Optional[str] = None
+    FAST_LAYOUT_SERVER_HOST: str = "127.0.0.1"
+    FAST_LAYOUT_SERVER_PORT: Optional[int] = None  # None = pick a free port
+    FAST_LAYOUT_SERVER_AUTOSTART: bool = True
+    FAST_LAYOUT_SERVER_STARTUP_TIMEOUT: float = 300.0
+    FAST_LAYOUT_SERVER_TIMEOUT: float = 600.0  # client request timeout
+    # Server-side continuous batching: coalesce pages arriving within this window
+    # (across all client requests) into one detect() call. Larger = better batch
+    # efficiency (esp. on GPU), slightly more latency.
+    FAST_LAYOUT_SERVER_BATCH_WAIT_MS: int = 5
+    # Max pages per coalesced detect() call. None = fall back to FAST_LAYOUT_BATCH_SIZE
+    # (or 8). This is the server's batch ceiling regardless of per-request sizes.
+    FAST_LAYOUT_SERVER_MAX_BATCH: Optional[int] = None
 
     # ---- Debug / draw fonts (label rendering on annotated images) ----------
     RECOGNITION_RENDER_FONTS: Dict[str, str] = {
